@@ -85,4 +85,5 @@ else:
 # Option to show raw data
 if st.checkbox("Show Raw Sample Data"):
     st.subheader("Raw Data")
-    st.dataframe(data)
+    st.dataframe(data)    git config --global user.name "Gowtham T"
+    git config --global user.email gowtham.t20062@gmail.com
