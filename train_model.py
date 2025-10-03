@@ -1,89 +1,116 @@
 # Import necessary libraries
 import streamlit as st
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier  # CHANGED: Imported XGBoost
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-import time
+from xgboost import XGBClassifier
+import numpy as np
+import plotly.express as px
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="MSME Early Warning Dashboard",
-    page_icon="⚠️",
+    page_title="MSME Real-time Health Dashboard",
+    page_icon="🩺",
     layout="wide"
 )
 
-# --- AI Model Function ---
-def run_model_analysis(df):
-    # Feature Engineering
+# --- AI Model & Data Processing Function ---
+@st.cache_data # Cache the data and model to run faster
+def run_ai_analysis(df):
+    # 1. Feature Engineering
     df['Consumption_Drop_Percentage'] = ((df['Mar_Consumption'] - df['Apr_Consumption']) / (df['Mar_Consumption'] + 1)) * 100
+    df['Is_Sick_Label'] = df['Consumption_Drop_Percentage'].apply(lambda x: 1 if x > 30 else 0)
     
-    # Labeling
-    df['Is_Sick'] = df['Consumption_Drop_Percentage'].apply(lambda x: 1 if x > 30 else 0)
-    
-    # Prepare Data for Model
+    # 2. Prepare Data for Model
     features = ['Age', 'Employees', 'Consumption_Drop_Percentage']
-    target = 'Is_Sick'
+    target = 'Is_Sick_Label'
     X = df[features]
     y = df[target]
     
-    # Split, Train, and Predict
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42)
-    
-    # CHANGED: Initialized XGBClassifier instead of RandomForest
+    # 3. Train the XGBoost Model
     model = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
-    model.fit(X_train, y_train)
+    model.fit(X, y) # Train on the full dataset for this prototype
     
-    # Predict on the entire dataset to display results
-    df['Prediction'] = model.predict(X)
+    # 4. Generate Risk Score (from 0 to 100)
+    # predict_proba gives probability for class 0 and 1. We take probability for class 1 (Sick).
+    probabilities = model.predict_proba(X)[:, 1]
+    df['Risk_Score'] = np.round(probabilities * 100, 2)
     
-    # Calculate metrics
-    y_pred_test = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred_test)
-    precision = precision_score(y_test, y_pred_test)
-    recall = recall_score(y_test, y_pred_test)
+    # 5. Assign Health Status based on Risk Score
+    def get_health_status(score):
+        if score > 70:
+            return "🔴 High Risk"
+        elif 40 <= score <= 70:
+            return "🟡 Medium Risk"
+        else:
+            return "🟢 Low Risk"
+            
+    df['Health_Status'] = df['Risk_Score'].apply(get_health_status)
     
-    return df, accuracy, precision, recall
+    return df.sort_values(by='Risk_Score', ascending=False)
 
 # --- Dashboard UI ---
-st.title("🚀 AI Early Warning System with XGBoost")
-st.markdown("This dashboard uses the powerful **XGBoost** model to predict potentially sick MSMEs.")
+st.title("🩺 MSME Real-time Health Dashboard")
+st.markdown("An advanced AI dashboard to monitor MSME health, generate reports, and provide real-time alerts.")
 
-# Load data
+# --- Load Data ---
 try:
     data = pd.read_csv('sample_msme_data_50.csv', on_bad_lines='skip')
 except FileNotFoundError:
     st.error("Error: 'sample_msme_data_50.csv' not found. Please make sure it's in the same folder.")
     st.stop()
 
-# Sidebar
-st.sidebar.header("Dashboard Controls")
-if st.sidebar.button("Run XGBoost Analysis"):
-    with st.spinner('Running XGBoost model... Please wait.'):
-        time.sleep(2) # Just for dramatic effect
-        # Call the function to run the analysis
-        results_df, accuracy, precision, recall = run_model_analysis(data)
-        st.sidebar.success("Analysis Complete!")
+# --- Main Dashboard ---
+st.subheader("MSME Health Overview")
 
-        st.subheader("📊 Model Performance Metrics")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Accuracy", f"{accuracy*100:.2f}%")
-        col2.metric("Precision", f"{precision*100:.2f}%")
-        col3.metric("Recall", f"{recall*100:.2f}%")
+# Run the AI analysis
+results_df = run_ai_analysis(data)
+
+# Display the main table with color-coded indicators
+st.dataframe(results_df[['MSME_ID', 'Health_Status', 'Risk_Score', 'BusinessType', 'Employees', 'Consumption_Drop_Percentage']])
+
+# --- 2. Detailed Reporting System ---
+st.sidebar.title("📄 Detailed Reporting")
+selected_msme = st.sidebar.selectbox("Select an MSME for a detailed report:", results_df['MSME_ID'])
+
+if selected_msme:
+    st.subheader(f"Detailed Report for: {selected_msme}")
+    
+    msme_data = results_df[results_df['MSME_ID'] == selected_msme].iloc[0]
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Health Status", msme_data['Health_Status'])
+        st.metric("Risk Score", f"{msme_data['Risk_Score']}%")
         
-        st.subheader("🚩 Flagged MSMEs (Potentially Sick)")
-        flagged_msmes = results_df[results_df['Prediction'] == 1]
-        st.dataframe(flagged_msmes[['MSME_ID', 'BusinessType', 'Employees', 'Mar_Consumption', 'Apr_Consumption', 'Consumption_Drop_Percentage']])
+        # Anomaly and Risk Factor Analysis
+        st.write("**Risk Factor Analysis:**")
+        if msme_data['Health_Status'] == "🔴 High Risk":
+            st.error(f"- Critical drop in electricity consumption of {msme_data['Consumption_Drop_Percentage']:.2f}%.")
+        elif msme_data['Health_Status'] == "🟡 Medium Risk":
+            st.warning(f"- Notable drop in electricity consumption of {msme_data['Consumption_Drop_Percentage']:.2f}%. Monitoring suggested.")
+        else:
+            st.success("- No significant risk factors detected. Operations appear stable.")
 
-        st.subheader("✅ Healthy MSMEs")
-        healthy_msmes = results_df[results_df['Prediction'] == 0]
-        st.dataframe(healthy_msmes[['MSME_ID', 'BusinessType', 'Employees', 'Mar_Consumption', 'Apr_Consumption']])
+    with col2:
+        # Historical Performance Chart
+        st.write("**Historical Electricity Consumption:**")
+        consumption_data = msme_data[['Jan_Consumption', 'Feb_Consumption', 'Mar_Consumption', 'Apr_Consumption']]
+        consumption_df = pd.DataFrame({
+            'Month': ['Jan_Consumption', 'Feb_Consumption', 'Mar_Consumption', 'Apr_Consumption'],
+            'Consumption (Units)': consumption_data.values
+        })
+        
+        fig = px.line(consumption_df, x='Month', y='Consumption (Units)', title=f"Consumption Trend for {selected_msme}", markers=True)
+        st.plotly_chart(fig, use_container_width=True)
 
+# --- 3. Real-time Alert System (Simulation) ---
+st.sidebar.title("🚨 Real-time Alerts")
+high_risk_alerts = results_df[results_df['Health_Status'] == "🔴 High Risk"]
+
+if not high_risk_alerts.empty:
+    for index, row in high_risk_alerts.iterrows():
+        st.sidebar.error(
+            f"**ALERT:** {row['MSME_ID']} is at HIGH RISK with a score of {row['Risk_Score']}%. "
+            f"Immediate attention required due to a {row['Consumption_Drop_Percentage']:.2f}% consumption drop."
+        )
 else:
-    st.info("Click the 'Run XGBoost Analysis' button on the sidebar to start.")
-
-# Option to show raw data
-if st.checkbox("Show Raw Sample Data"):
-    st.subheader("Raw Data")
-    st.dataframe(data)    git config --global user.name "Gowtham T"
-    git config --global user.email gowtham.t20062@gmail.com
+    st.sidebar.success("No high-risk alerts at the moment. All MSMEs are stable.")
